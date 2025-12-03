@@ -1,0 +1,32 @@
+def crivo_eratostenes(n):
+    """
+    Implementa o Crivo de Eratóstenes para encontrar todos
+    os números primos menores ou iguais a n.
+    """
+    if n < 2:
+        return []
+
+    # Inicializa a lista de marcadores (True = potencialmente primo)
+    primo = [True] * (n + 1)
+    primo[0] = primo[1] = False  # 0 e 1 não são primos
+
+    p = 2
+    while p * p <= n:
+        if primo[p]:  # Se ainda não foi marcado, é primo
+            # Marca todos os múltiplos de p a partir de p*p
+            for multiplo in range(p * p, n + 1, p):
+                primo[multiplo] = False
+        p += 1
+
+    # Retorna todos os números que permaneceram como True
+    return [i for i in range(n + 1) if primo[i]]
+
+
+# ---- Interface simples no Colab ----
+n = int(input("Calcular primos até n = "))
+
+primos = crivo_eratostenes(n)
+
+print(f"\nPrimos até {n}:")
+print(primos)
+print(f"\nQuantidade de primos encontrados: {len(primos)}")
