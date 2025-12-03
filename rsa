@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+
+import math
+import random
+from typing import List, Tuple
+
+# -----------------------------
+# Crivo de Eratóstenes (sieve)
+# -----------------------------
+def sieve(limit: int) -> List[int]:
+    """Retorna lista de primos <= limit usando o Crivo de Eratóstenes."""
+    if limit < 2:
+        return []
+    sieve = bytearray(b'\x01') * (limit + 1)
+    sieve[0:2] = b'\x00\x00'
+    for p in range(2, int(limit**0.5) + 1):
+        if sieve[p]:
+            step = p
+            start = p*p
+            sieve[start:limit+1:step] = b'\x00' * (((limit - start) // step) + 1)
+    return [i for i, isprime in enumerate(sieve) if isprime]
+
+def random_prime_in_range(bits: int) -> int:
+    """Gera um primo aleatório com 'bits' bits usando sieve.
+    Observação: para bits grandes este método fica lento / pesado em memória."""
+    if bits < 2:
+        raise ValueError("bits deve ser >= 2")
+    low = 1 << (bits - 1)
+    high = (1 << bits) - 1
+    # Ajuste do limite do sieve (alto)
+    limit = high
+    primes = sieve(limit)
+    # Filtrar apenas primos com número de bits requisitado
+    candidates = [p for p in primes if p >= low and p <= high]
+    if not candidates:
+        raise ValueError(f"Nenhum primo encontrado no intervalo para {bits} bits. Tente bits menores.")
+    return random.choice(candidates)
+
+# -----------------------------
+# Matemática: gcd, egcd, modinv
+# -----------------------------
+def gcd(a: int, b: int) -> int:
+    while b:
+        a, b = b, a % b
+    return abs(a)
+
+def egcd(a: int, b: int) -> Tuple[int, int, int]:
+    """Extended Euclidean algorithm.
+    Retorna (g, x, y) tal que a*x + b*y = g = gcd(a, b)"""
+    if b == 0:
+        return (a, 1, 0)
+    else:
+        g, x1, y1 = egcd(b, a % b)
+        x = y1
+        y = x1 - (a // b) * y1
+        return (g, x, y)
+
+def modinv(a: int, m: int) -> int:
+    """Retorna inverso multiplicativo de a modulo m (a^{-1} mod m). Lança erro se não existir."""
+    g, x, _ = egcd(a, m)
+    if g != 1:
+        raise ValueError(f"Inverso modular não existe para a={a}, módulo m={m} (gcd={g})")
+    return x % m
+
+# -----------------------------
+# Chaves RSA
+# -----------------------------
+def generate_keypair(prime_bits: int = 16) -> Tuple[Tuple[int,int], Tuple[int,int]]:
+    """Gera par de chaves RSA (public, private).
+    prime_bits: número de bits desejado para cada primo p e q.
+    Retorna (public_key, private_key) onde cada é (e, n) e (d, n)."""
+    # Gera p e q distintos
+    p = random_prime_in_range(prime_bits)
+    q = p
+    while q == p:
+        q = random_prime_in_range(prime_bits)
+
+    n = p * q
+    phi = (p - 1) * (q - 1)
+
+    # Escolhe e: tenta 65537, senão procura um ímpar pequeno coprimo
+    candidate_es = [65537, 3, 5, 17, 257]
+    e = None
+    for ce in candidate_es:
+        if ce < phi and gcd(ce, phi) == 1:
+            e = ce
+            break
+    if e is None:
+        # procurar e começando em 3, pulando pares
+        for ce in range(3, phi, 2):
+            if gcd(ce, phi) == 1:
+                e = ce
+                break
+    if e is None:
+        raise RuntimeError("Não foi possível encontrar e coprimo com phi")
+
+    d = modinv(e, phi)
+    return (e, n), (d, n)
+
+# -----------------------------
+# Helpers para bloco de mensagens
+# -----------------------------
+def max_hex_block_size(n: int) -> int:
+    """Retorna nro máximo de dígitos hexadecimais por bloco tal que valor < n."""
+    # n.bit_length() dá bits, cada dígito hex = 4 bits
+    hex_digits = n.bit_length() // 4
+    if hex_digits == 0:
+        hex_digits = 1
+    # Para segurança, reduzimos 1 hex digit caso a representação máxima iguale/exceda n
+    # Mas garantimos ao menos 2 hex digits (1 byte) para conversão correta
+    return max(2, hex_digits)
+
+def split_hex_in_blocks(hexstr: str, block_hex_size: int) -> List[str]:
+    """Divide hexstr em blocos com block_hex_size hex-dígitos, da esquerda pra direita.
+    Se necessário, pad à esquerda do primeiro bloco para completar múltiplo."""
+    # garante comprimento par
+    if len(hexstr) % 2 == 1:
+        hexstr = '0' + hexstr
+    # pad na esquerda para múltiplo de block_hex_size
+    rem = len(hexstr) % block_hex_size
+    if rem != 0:
+        pad = block_hex_size - rem
+        hexstr = ('0' * pad) + hexstr
+    blocks = [hexstr[i:i+block_hex_size] for i in range(0, len(hexstr), block_hex_size)]
+    return blocks
+
+# -----------------------------
+# Criptografia / Descriptografia
+# -----------------------------
+def encrypt_message(message: str, pubkey: Tuple[int,int]) -> Tuple[List[int], int]:
+    """Criptografa message (str) usando pubkey (e, n).
+    Retorna lista de inteiros ciphertext e o tamanho do bloco hex usado (para decodificação)."""
+    e, n = pubkey
+    # converte a string em bytes -> hex
+    message_bytes = message.encode('utf-8')
+    hexstr = message_bytes.hex()
+    block_hex_size = max_hex_block_size(n)
+    # Se block_hex_size for muito grande para a mensagem, ainda funciona; blocos curtos ok.
+    blocks = split_hex_in_blocks(hexstr, block_hex_size)
+    cipher_blocks = []
+    for b in blocks:
+        m_int = int(b, 16)
+        if m_int >= n:
+            # fallback — reduzir tamanho do bloco até caber
+            # (reduzimos 1 hex digit cada iteração)
+            bh = block_hex_size
+            while m_int >= n and bh > 2:
+                bh -= 1
+                blocks_small = split_hex_in_blocks(hexstr, bh)
+                # reprocess com novo tamanho
+                return encrypt_message(message, pubkey)
+            if m_int >= n:
+                raise ValueError("Não foi possível particionar a mensagem em blocos menores que n")
+        c_int = pow(m_int, e, n)
+        cipher_blocks.append(c_int)
+    return cipher_blocks, block_hex_size
+
+def decrypt_message(cipher_blocks: List[int], privkey: Tuple[int,int], block_hex_size: int) -> str:
+    """Descriptografa lista de inteiros cipher_blocks com chave privada (d, n).
+    block_hex_size deve ser o valor usado na criptografia para reconstruir hex corretamente."""
+    d, n = privkey
+    hex_parts = []
+    # cada bloco decifrado vira um inteiro -> hex com padding para block_hex_size
+    for c in cipher_blocks:
+        m_int = pow(c, d, n)
+        hexpart = format(m_int, 'x')  # sem zeros à esquerda
+        # precisamos pad à esquerda para garantir cada bloco tenha block_hex_size dígitos (exceto possivelmente primeiro se leading zeros foram removidos)
+        if len(hexpart) < block_hex_size:
+            hexpart = hexpart.rjust(block_hex_size, '0')
+        hex_parts.append(hexpart)
+    hexfull = ''.join(hex_parts)
+    # remover possíveis zeros padding à esquerda que não faziam parte da mensagem original
+    # converte hex para bytes; se houver um nibble esquerdo incorreto, garantimos comprimento par
+    if len(hexfull) % 2 == 1:
+        hexfull = '0' + hexfull
+    try:
+        message_bytes = bytes.fromhex(hexfull)
+        message = message_bytes.decode('utf-8')
+    except Exception:
+        # tentativa com 'replace' para evitar crash em caso de decodificação
+        message = bytes.fromhex(hexfull).decode('utf-8', errors='replace')
+    return message
+
+# -----------------------------
+# Demonstração / CLI
+# -----------------------------
+def demo():
+    prime_bits = input("Tamanho em bits para cada primo (recomendado 12-20 para testes rápidos) [16]: ").strip()
+    if prime_bits == "":
+        prime_bits = 16
+    else:
+        prime_bits = int(prime_bits)
+
+    print(f"Gerando chaves com primos de ~{prime_bits} bits (p, q)... (pode demorar um pouco se bits grandes)")
+    public, private = generate_keypair(prime_bits=prime_bits)
+    e, n = public
+    d, _ = private
+    print(f"Chave pública (e, n): (e={e}, n={n})")
+    print(f"Chave privada (d, n): (d={d}, n={n})")
+
+    message = input("Mensagem a ser criptografada: ")
+    cipher_blocks, block_hex_size = encrypt_message(message, public)
+    print("\nBlocos cifrados (inteiros):")
+    for i, cb in enumerate(cipher_blocks, 1):
+        print(f"  Bloco {i}: {cb}")
+
+    recovered = decrypt_message(cipher_blocks, private, block_hex_size)
+    print("\nMensagem decifrada:")
+    print(recovered)
+
+    if recovered == message:
+        print("\nSucesso: mensagem original recuperada corretamente.")
+    else:
+        print("\nAviso: a mensagem recuperada difere da original (possível erro de padding/encoding).")
+
+if __name__ == "__main__":
+    demo()
